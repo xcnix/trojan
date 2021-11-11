@@ -65,7 +65,7 @@ EOF
     sleep 3
     rm -rf /usr/share/nginx/html/*
     cd /usr/share/nginx/html/
-    wget https://github.com/atrandys/trojan/raw/master/fakesite.zip >/dev/null 2>&1
+    wget https://github.com/xcnix/trojan/raw/master/fakesite.zip >/dev/null 2>&1
     unzip fakesite.zip >/dev/null 2>&1
     sleep 5
     if [ ! -d "/usr/src" ]; then
@@ -79,6 +79,8 @@ EOF
             exit 1
         fi
         curl https://get.acme.sh | sh
+        # latest acme tool will use zerossl by default
+        ~/.acme.sh/acme.sh  --set-default-ca --server letsencrypt
         ~/.acme.sh/acme.sh  --issue  -d $your_domain  --nginx
         if test -s /root/.acme.sh/$your_domain/fullchain.cer; then
             cert_success="1"
