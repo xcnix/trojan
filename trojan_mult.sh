@@ -384,9 +384,10 @@ function preinstall_check(){
     blue "请输入绑定到本VPS的域名"
     green "======================="
     read your_domain
-    real_addr=`ping ${your_domain} -c 1 | sed '1{s/[^(]*(//;s/).*//;q}'`
-    local_addr=`curl ipv4.icanhazip.com`
-    if [ $real_addr == $local_addr ] ; then
+    real_addr=$(nslookup ${your_domain} | grep Address | tail -n 1  | awk '{print $2}')
+    local_addr4=`curl ipv4.icanhazip.com`
+    local_addr6=`curl ipv6.icanhazip.com`
+    if [ "$real_addr" == "$local_addr4" ] or [ "$real_addr" == "$local_addr6" ]; then
         green "=========================================="
         green "       域名解析正常，开始安装trojan"
         green "=========================================="
@@ -426,9 +427,10 @@ function repair_cert(){
     blue "务必与之前失败使用的域名一致"
     green "============================"
     read your_domain
-    real_addr=`ping ${your_domain} -c 1 | sed '1{s/[^(]*(//;s/).*//;q}'`
-    local_addr=`curl ipv4.icanhazip.com`
-    if [ $real_addr == $local_addr ] ; then
+    real_addr=$(nslookup ${your_domain} | grep Address | tail -n 1  | awk '{print $2}')
+    local_addr4=`curl ipv4.icanhazip.com`
+    local_addr6=`curl ipv6.icanhazip.com`
+    if [ "$real_addr" == "$local_addr4" ] or [ "$real_addr" == "$local_addr6" ]; then
         ~/.acme.sh/acme.sh  --issue  -d $your_domain  --standalone
         ~/.acme.sh/acme.sh  --installcert  -d  $your_domain   \
             --key-file   /usr/src/trojan-cert/$your_domain/private.key \
