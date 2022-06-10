@@ -138,6 +138,7 @@ http {
     }
     server {
         listen       0.0.0.0:80;
+        listen          [::]:80;
         server_name  $your_domain;
         return 301 https://$your_domain\$request_uri;
     }
