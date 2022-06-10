@@ -387,7 +387,7 @@ function preinstall_check(){
     real_addr=$(nslookup ${your_domain} | grep Address | tail -n 1  | awk '{print $2}')
     local_addr4=`curl ipv4.icanhazip.com`
     local_addr6=`curl ipv6.icanhazip.com`
-    if [ "$real_addr" == "$local_addr4" ] or [ "$real_addr" == "$local_addr6" ]; then
+    if [[ "$real_addr" == "$local_addr4" ]] || [[ "$real_addr" == "$local_addr6" ]]; then
         green "=========================================="
         green "       域名解析正常，开始安装trojan"
         green "=========================================="
@@ -430,7 +430,7 @@ function repair_cert(){
     real_addr=$(nslookup ${your_domain} | grep Address | tail -n 1  | awk '{print $2}')
     local_addr4=`curl ipv4.icanhazip.com`
     local_addr6=`curl ipv6.icanhazip.com`
-    if [ "$real_addr" == "$local_addr4" ] or [ "$real_addr" == "$local_addr6" ]; then
+    if [[ "$real_addr" == "$local_addr4" ]] || [[ "$real_addr" == "$local_addr6" ]]; then
         ~/.acme.sh/acme.sh  --issue  -d $your_domain  --standalone
         ~/.acme.sh/acme.sh  --installcert  -d  $your_domain   \
             --key-file   /usr/src/trojan-cert/$your_domain/private.key \
