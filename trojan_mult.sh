@@ -160,51 +160,11 @@ EOF
         wget https://github.com/trojan-gfw/trojan/releases/download/v"${latest_version}"/trojan-"${latest_version}"-linux-amd64.tar.xz
         tar xf trojan-"${latest_version}"-linux-amd64.tar.xz >/dev/null 2>&1
         rm -f trojan-"${latest_version}"-linux-amd64.tar.xz
-        # Download trojan Client
-        green "Start to download latest windows Client"
-        wget https://github.com/atrandys/trojan/raw/master/trojan-cli.zip
-        wget -P /usr/src/trojan-temp https://github.com/trojan-gfw/trojan/releases/download/v"${latest_version}"/trojan-"${latest_version}"-win.zip
-        unzip -o trojan-cli.zip >/dev/null 2>&1
-        unzip -o /usr/src/trojan-temp/trojan-"${latest_version}"-win.zip -d /usr/src/trojan-temp/ >/dev/null 2>&1
-        mv -f /usr/src/trojan-temp/trojan/trojan.exe /usr/src/trojan-cli/
+
         green "Please set password for trojan:"
         read -r -p "Input trojan password :" trojan_passwd
-        #trojan_passwd=$(cat /dev/urandom | head -1 | md5sum | head -c 8)
-        cat > /usr/src/trojan-cli/config.json <<-EOF
-{
-    "run_type": "client",
-    "local_addr": "127.0.0.1",
-    "local_port": 1080,
-    "remote_addr": "$your_domain",
-    "remote_port": 443,
-    "password": [
-        "$trojan_passwd"
-    ],
-    "log_level": 1,
-    "ssl": {
-        "verify": true,
-        "verify_hostname": true,
-        "cert": "",
-        "cipher_tls13":"TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
-        "sni": "",
-        "alpn": [
-            "h2",
-            "http/1.1"
-        ],
-        "reuse_session": true,
-        "session_ticket": false,
-        "curves": ""
-    },
-    "tcp": {
-        "no_delay": true,
-        "keep_alive": true,
-        "fast_open": false,
-        "fast_open_qlen": 20
-    }
-}
-EOF
-         rm -rf /usr/src/trojan/server.conf
-         cat > /usr/src/trojan/server.conf <<-EOF
+        rm -rf /usr/src/trojan/server.conf
+        cat > /usr/src/trojan/server.conf <<-EOF
 {
     "run_type": "server",
     "local_addr": "0.0.0.0",
@@ -247,10 +207,8 @@ EOF
     }
 }
 EOF
-        cd /usr/src/trojan-cli/ || exit 1
-        zip -q -r trojan-cli.zip /usr/src/trojan-cli/
         rm -rf /usr/src/trojan-temp/
-        rm -f /usr/src/trojan-cli.zip
+
         cat > ${systempwd}trojan.service <<-EOF
 [Unit]  
 Description=trojan  
@@ -267,7 +225,6 @@ RestartSec=1s
 [Install]  
 WantedBy=multi-user.target
 EOF
-
         chmod +x ${systempwd}trojan.service
         systemctl enable trojan.service
         cd /root || exit 1
@@ -275,15 +232,6 @@ EOF
             --key-file   /usr/src/trojan-cert/"$your_domain"/private.key \
             --fullchain-file  /usr/src/trojan-cert/"$your_domain"/fullchain.cer \
             --reloadcmd  "systemctl restart trojan"	
-        green "==========================================================================="
-        green "Windows Client Path: /usr/src/trojan-cli/trojan-cli.zip"
-        green "==========================================================================="
-        echo
-        echo
-        green "                          Client Configuration File"
-        green "==========================================================================="
-        cat /usr/src/trojan-cli/config.json
-        green "==========================================================================="
     else
         red "==================================="
         red "Installed Failed due to Http Cert Error"
