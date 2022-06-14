@@ -18,27 +18,34 @@ function version_lt(){
     test "$(echo "$@" | tr " " "\n" | sort -rV | head -n 1)" != "$1"; 
 }
 
+web_domain=$1
+trojan_passwd=${TROJAN_PASSWD:?Please Set TROJAN_PASSWD Before Run This Script}
+
+help() {
+    blue "Usage: TROJAN_PASSWD=<YOUR PASSWORD> $0 [web domain name]"
+}
+
+if [ -z "$web_domain" ]; then
+    help
+    exit 1
+fi
+
 # shellcheck source=/dev/null
 source /etc/os-release
 RELEASE=$ID
 if [ "$RELEASE" == "centos" ]; then
     release="centos"
-    systemPackage="yum"
-elif [ "$RELEASE" == "debian" ]; then
+    instTool="yum"
+elif [ "$RELEASE" == "debian" ] || [ "$RELEASE" == "ubuntu" ]; then
     release="debian"
-    systemPackage="apt-get"
-elif [ "$RELEASE" == "ubuntu" ]; then
-    release="ubuntu"
-    systemPackage="apt-get"
+    instTool="apt-get"
+else
+    red "Not Support This Platform"
+    exit 1
 fi
-systempwd="/etc/systemd/system/"
 
-function install_trojan(){
-    $systemPackage install -y nginx
-    if [ ! -d "/etc/nginx/" ]; then
-        red "nginx home is not exist, please unintall trojan then reinstall"
-        exit 1
-    fi
+function install_nginx() {
+    $instTool install -y nginx
     cat > /etc/nginx/nginx.conf <<-EOF
 user  root;
 worker_processes  1;
@@ -61,62 +68,71 @@ http {
     #gzip  on;
     server {
         listen       80;
-        server_name  $your_domain;
+        server_name  $web_domain;
         root /usr/share/nginx/html;
         index index.php index.html index.htm;
     }
 }
 EOF
-    systemctl restart nginx
-    sleep 3
+    systemctl enable nginx
+    systemctl start nginx
+}
+
+function install_fake_site() {
+    systemctl stop nginx
     rm -rf /usr/share/nginx/html/*
     cd /usr/share/nginx/html/ || exit 1
     wget https://github.com/xcnix/trojan/raw/master/fakesite.zip >/dev/null 2>&1
     unzip fakesite.zip >/dev/null 2>&1
+    rm -rf fakesite.zip
     sleep 5
-    if [ ! -d "/usr/src" ]; then
-        mkdir /usr/src
+    systemctl start nginx
+}
+ 
+function install_http_cert() {
+    curl https://get.acme.sh | sh
+    # latest acme tool will use zerossl by default
+    ~/.acme.sh/acme.sh  --set-default-ca --server letsencrypt
+    ~/.acme.sh/acme.sh  --register-account  -m admin@"$web_domain" --server letsencrypt
+    # Test before apply
+    if ~/.acme.sh/acme.sh --issue -d "$web_domain" --nginx --staging; then
+        rm -rf ~/.acme.sh/*.cer
+        rm -rf ~/.acme.sh/*.key
+        ~/.acme.sh/acme.sh  --issue  -d "$web_domain"  --nginx 
     fi
-    if [ ! -d "/usr/src/trojan-cert" ]; then
-        mkdir /usr/src/trojan-cert /usr/src/trojan-temp
-        mkdir /usr/src/trojan-cert/"$your_domain"
-        if [ ! -d "/usr/src/trojan-cert/$your_domain" ]; then
-            red "/usr/src/trojan-cert/$your_domain is not exist"
+
+    if [ ! -f ~/.acme.sh/"$web_domain"/fullchain.cer ]; then
+       red "ERROR: Apply Cert Failed" 
+       exit 1
+    fi
+
+    ~/.acme.sh/acme.sh  --install-cert  -d  "$web_domain"   \
+    --key-file   /usr/src/trojan-cert/"$web_domain"/private.key \
+    --fullchain-file  /usr/src/trojan-cert/"$web_domain"/fullchain.cer
+
+    ~/.acme.sh/acme.sh --upgrade --auto-upgrade
+}
+
+function check_cert_expire() {
+    if [ -f ~/.acme.sh/"$web_domain"/fullchain.cer ]; then
+        cert_expire_date=$(openssl x509 -in ~/.acme.sh/"$web_domain"/fullchain.cer -noout -enddate | cut -d= -f2)
+        cert_expire_date_timestamp=$(date -d "$cert_expire_date" +%s)
+        now_timestamp=$(date +%s)
+        if [ $((cert_expire_date_timestamp - now_timestamp)) -le 0 ]; then
+            red "ERROR: Cert Expire"
             exit 1
         fi
-        curl https://get.acme.sh | sh
-        # latest acme tool will use zerossl by default
-        ~/.acme.sh/acme.sh  --set-default-ca --server letsencrypt
-        ~/.acme.sh/acme.sh  --issue  -d "$your_domain"  --nginx
-        if test -s /root/.acme.sh/"$your_domain"/fullchain.cer; then
-            cert_success="1"
-        fi
-    elif [ -f "/usr/src/trojan-cert/$your_domain/fullchain.cer" ]; then
-        cd /usr/src/trojan-cert/"$your_domain" || exit 1
-        create_time=$(stat -c %Y fullchain.cer)
-        now_time=$(date +%s)
-        minus=$((now_time - create_time ))
-        if [  $minus -gt 5184000 ]; then
-            curl https://get.acme.sh | sh
-            ~/.acme.sh/acme.sh  --issue  -d "$your_domain"  --nginx
-            if test -s /root/.acme.sh/"$your_domain"/fullchain.cer; then
-                cert_success="1"
-            fi
-        else 
-            green "Cert of domain: $your_domain is valid"
-            cert_success="1"
-        fi        
-    else 
-        mkdir /usr/src/trojan-cert/"$your_domain"
-        curl https://get.acme.sh | sh
-        ~/.acme.sh/acme.sh  --issue  -d "$your_domain"  --nginx
-        if test -s /root/.acme.sh/"$your_domain"/fullchain.cer; then
-            cert_success="1"
-        fi
     fi
-    
-    if [ "$cert_success" == "1" ]; then
-        cat > /etc/nginx/nginx.conf <<-EOF
+}
+
+function install_trojan_cert() {
+    if [ ! -d "/usr/src/trojan-cert/" ]; then
+        mkdir -p /usr/src/trojan-cert/
+    fi
+
+    cp -r ~/.acme.sh/"$web_domain" /usr/src/trojan-cert/
+
+    cat > /etc/nginx/nginx.conf <<-EOF
 user  root;
 worker_processes  1;
 error_log  /var/log/nginx/error.log warn;
@@ -138,33 +154,31 @@ http {
     #gzip  on;
     server {
         listen       127.0.0.1:80;
-        server_name  $your_domain;
+        server_name  $web_domain;
         root /usr/share/nginx/html;
         index index.php index.html index.htm;
     }
     server {
         listen       0.0.0.0:80;
-        server_name  $your_domain;
-        return 301 https://$your_domain\$request_uri;
+        server_name  $web_domain;
+        return 301 https://$web_domain\$request_uri;
     }
     
 }
 EOF
-        systemctl restart nginx
-        systemctl enable nginx
-        cd /usr/src || exit 1
-        wget https://api.github.com/repos/trojan-gfw/trojan/releases/latest >/dev/null 2>&1
-        latest_version=$(grep tag_name latest| awk -F '[:,"v]' '{print $6}')
-        rm -f latest
-        green "Start to downloading latesting trojan amd64"
-        wget https://github.com/trojan-gfw/trojan/releases/download/v"${latest_version}"/trojan-"${latest_version}"-linux-amd64.tar.xz
-        tar xf trojan-"${latest_version}"-linux-amd64.tar.xz >/dev/null 2>&1
-        rm -f trojan-"${latest_version}"-linux-amd64.tar.xz
+}
 
-        green "Please set password for trojan:"
-        read -r -p "Input trojan password :" trojan_passwd
-        rm -rf /usr/src/trojan/server.conf
-        cat > /usr/src/trojan/server.conf <<-EOF
+function install_trojan(){
+    cd /usr/src || exit 1
+    wget https://api.github.com/repos/trojan-gfw/trojan/releases/latest >/dev/null 2>&1
+    latest_version=$(grep tag_name latest | awk -F '[:,"v]' '{print $6}')
+    rm -f latest
+    green "Start to downloading latesting trojan amd64"
+    wget https://github.com/trojan-gfw/trojan/releases/download/v"${latest_version}"/trojan-"${latest_version}"-linux-amd64.tar.xz
+    tar xf trojan-"${latest_version}"-linux-amd64.tar.xz >/dev/null 2>&1
+    rm -f trojan-"${latest_version}"-linux-amd64.tar.xz
+  
+    cat > /usr/src/trojan/server.conf <<-EOF
 {
     "run_type": "server",
     "local_addr": "0.0.0.0",
@@ -176,8 +190,8 @@ EOF
     ],
     "log_level": 1,
     "ssl": {
-        "cert": "/usr/src/trojan-cert/$your_domain/fullchain.cer",
-        "key": "/usr/src/trojan-cert/$your_domain/private.key",
+        "cert": "/usr/src/trojan-cert/$web_domain/fullchain.cer",
+        "key": "/usr/src/trojan-cert/$web_domain/private.key",
         "key_password": "",
         "cipher_tls13":"TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
         "prefer_server_cipher": true,
@@ -207,9 +221,10 @@ EOF
     }
 }
 EOF
-        rm -rf /usr/src/trojan-temp/
+}
 
-        cat > ${systempwd}trojan.service <<-EOF
+function install_trojan_service() {
+    cat > /etc/systemd/system/trojan.service <<-EOF
 [Unit]  
 Description=trojan  
 After=network.target  
@@ -225,18 +240,7 @@ RestartSec=1s
 [Install]  
 WantedBy=multi-user.target
 EOF
-        chmod +x ${systempwd}trojan.service
-        systemctl enable trojan.service
-        cd /root || exit 1
-        ~/.acme.sh/acme.sh  --installcert  -d  "$your_domain"   \
-            --key-file   /usr/src/trojan-cert/"$your_domain"/private.key \
-            --fullchain-file  /usr/src/trojan-cert/"$your_domain"/fullchain.cer \
-            --reloadcmd  "systemctl restart trojan"	
-    else
-        red "==================================="
-        red "Installed Failed due to Http Cert Error"
-        red "==================================="
-    fi
+    systemctl enable trojan.service
 }
 
 function preinstall_check(){
@@ -244,19 +248,15 @@ function preinstall_check(){
     if [ -n "$nginx_status" ]; then
         systemctl stop nginx
     fi
-    $systemPackage -y install net-tools socat >/dev/null 2>&1
+    $instTool -y install net-tools socat >/dev/null 2>&1
     Port80=$(netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w 80)
     Port443=$(netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w 443)
     if [ -n "$Port80" ]; then
-        red "==========================================================="
-        red "80 Port is in Use, Please Check and Run this Script Again"
-        red "==========================================================="
+        red "Port 80 is in Use, Please Check and Run this Script Again"
         exit 1
     fi
     if [ -n "$Port443" ]; then
-        red "============================================================="
-        red "443 Port is in Use, Please Check and Run this Script Again"
-        red "============================================================="
+        red "Port 443 is in Use, Please Check and Run this Script Again"
         exit 1
     fi
 
@@ -268,61 +268,30 @@ function preinstall_check(){
     fi
 
     if [ "$release" == "centos" ]; then
-        firewall_status=$(systemctl status firewalld | grep "Active: active")
-        if [ -n "$firewall_status" ]; then
-            green "Firewalld is Active, Add Rules to Allow 80/443 Ports"
+        if ! systemctl is-active firewalld >/dev/null 2>&1; then
             firewall-cmd --zone=public --add-port=80/tcp --permanent
             firewall-cmd --zone=public --add-port=443/tcp --permanent
             firewall-cmd --reload
         fi
     fi
 
-    if [ "$release" == "ubuntu" ]; then
-        ufw_status=$(systemctl status ufw | grep "Active: active")
-        if [ -n "$ufw_status" ]; then
+    if [[ "$release" == "debian" ]]; then
+        if ! systemctl is-active ufw >/dev/null 2>&1; then
             ufw allow 80/tcp
             ufw allow 443/tcp
             ufw reload
         fi
-        apt-get update
-    elif [ "$release" == "debian" ]; then
-        ufw_status=$(systemctl status ufw | grep "Active: active")
-        if [ -n "$ufw_status" ]; then
-            ufw allow 80/tcp
-            ufw allow 443/tcp
-            ufw reload
-        fi
-        apt-get update
     fi
 
-    $systemPackage -y install  wget unzip zip curl tar >/dev/null 2>&1
-    green "======================="
-    blue "Please Input Your Domain Name:"
-    green "======================="
-    read -r your_domain
-    real_addr=$(ping "${your_domain}" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')
+    $instTool -y install wget unzip zip curl tar >/dev/null 2>&1
+    real_addr=$(ping "${web_domain}" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')
     local_addr=$(curl ipv4.icanhazip.com)
     if [ "$real_addr" == "$local_addr" ] ; then
-        green "=========================================="
-        green "       Successful to Resolve Your Domain Name. "
-        green "       Starting to Install Trojan"
-        green "=========================================="
-        sleep 1
+        green "Starting to Install Trojan"
         install_trojan
     else
-        red "===================================="
-        red "IP Binded to Your Domain Name is not Match with Local IP"
-        red "Do you want to Continue?[y/n]"
-        red "===================================="
-        read -r -p "Force Continue ? Please Input [Y/n] :" yn
-        [ -z "${yn}" ] && yn="y"
-        if [[ $yn == [Yy] ]]; then
-            green "Force Continue ..."
-            sleep 1
-            install_trojan
-        else
-            exit 1
-        fi
+        red "ERROR: IP Binded to Web Domain Name is not Match with Local IP"
+        exit 1
     fi
 }
 
@@ -330,24 +299,19 @@ function repair_cert(){
     systemctl stop nginx
     Port80=$(netstat -tlpn | awk -F '[: ]+' '$1=="tcp"{print $5}' | grep -w 80)
     if [ -n "$Port80" ]; then
-        red "==========================================================="
-        red "80 Port is Still in Use, Please Close the Port 80 firstly"
-        red "==========================================================="
+        red "Port 80 is Still in Use, Please Close the Port firstly"
         exit 1
     fi
-    green "============================"
-    blue "Please Enter the Domain Name Same as Before"
-    green "============================"
-    read -r your_domain
-    real_addr=$(ping "${your_domain}" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')
+
+    real_addr=$(ping "${web_domain}" -c 1 | sed '1{s/[^(]*(//;s/).*//;q}')
     local_addr=$(curl ipv4.icanhazip.com)
     if [ "$real_addr" == "$local_addr" ] ; then
-        ~/.acme.sh/acme.sh  --issue  -d "$your_domain"  --standalone
-        ~/.acme.sh/acme.sh  --installcert  -d  "$your_domain"   \
-            --key-file   /usr/src/trojan-cert/"$your_domain"/private.key \
-            --fullchain-file /usr/src/trojan-cert/"$your_domain"/fullchain.cer \
+        ~/.acme.sh/acme.sh  --issue  -d "$web_domain"  --standalone
+        ~/.acme.sh/acme.sh  --installcert  -d  "$web_domain"   \
+            --key-file   /usr/src/trojan-cert/"$web_domain"/private.key \
+            --fullchain-file /usr/src/trojan-cert/"$web_domain"/fullchain.cer \
             --reloadcmd  "systemctl restart trojan"
-        if test -s /usr/src/trojan-cert/"$your_domain"/fullchain.cer; then
+        if test -s /usr/src/trojan-cert/"$web_domain"/fullchain.cer; then
             green "Apply Http Cert Successfully"
             systemctl restart trojan
             systemctl start nginx
@@ -355,23 +319,18 @@ function repair_cert(){
             red "Failed to Apply Http Cert"
         fi
     else
-        red "================================"
         red "IP Binded to Domain Not Match Local IP"
-        red "Please Check DNS Setting of Your Domain Name"
-        red "================================"
+        red "Please Check DNS Setting of Web Domain Name"
     fi
 }
 
 function remove_trojan(){
-    red "================================"
-    red "Starting to Uninstall Trojan"
-    red "and Will Uninstall Nginx at the same time"
-    red "================================"
+    red "--- Starting to Uninstall Trojan & Nginx---"
     systemctl stop trojan
     systemctl disable trojan
     systemctl stop nginx
     systemctl disable nginx
-    rm -f ${systempwd}trojan.service
+    rm -f /etc/systemd/system/trojan.service
     if [ "$release" == "centos" ]; then
         yum remove -y nginx
     else
@@ -409,7 +368,7 @@ function update_trojan(){
     green "Upgrade Trojan Completed. Please download latest client manually."
     rm -f trojan.tmp
     else
-        green "Currenty trojan is up-to-date!"
+        green "Current Trojan is up-to-date!"
     fi
 }
 
